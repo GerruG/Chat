@@ -14,7 +14,7 @@ public class ChatClient extends JFrame {
     private JList<String> userList;
     private DefaultListModel<String> userModel;
 
-    final String username;
+    private final String username;
     private final Set<String> users;
     private final MulticastNetworking networking;
 
@@ -26,6 +26,7 @@ public class ChatClient extends JFrame {
         networking = new MulticastNetworking(this); // Setup networking
 
         Runtime.getRuntime().addShutdownHook(new Thread(this::leaveChat));
+        LOGGER.info("Chat client started for user: " + username);
     }
 
     private void setupUI() {
@@ -77,6 +78,7 @@ public class ChatClient extends JFrame {
 
             setVisible(true);
         });
+        LOGGER.info("UI setup complete for user: " + username);
     }
 
     public void displayMessage(String message) {
@@ -97,11 +99,13 @@ public class ChatClient extends JFrame {
         if (!message.isEmpty()) {
             networking.sendPacket("MESSAGE:" + username + ": " + message);
             inputField.setText("");
+            LOGGER.info("Sent message: " + message);
         }
     }
 
     private void leaveChat() {
         networking.leaveChat(username);
+        LOGGER.info("User " + username + " has left the chat");
     }
 
     public Set<String> getUsers() {
