@@ -1,7 +1,6 @@
 import javax.swing.*;
 import java.awt.*;
 import java.io.IOException;
-import java.net.*;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.logging.Level;
@@ -9,26 +8,22 @@ import java.util.logging.Logger;
 
 public class ChatClient extends JFrame {
     private static final Logger LOGGER = Logger.getLogger(ChatClient.class.getName());
-    private static final String MULTICAST_ADDRESS = "230.0.0.0";
-    private static final int PORT = 4446;
 
     private JTextArea chatArea;
     private JTextField inputField;
     private JList<String> userList;
     private DefaultListModel<String> userModel;
 
-    private MulticastSocket socket;
-    private InetAddress group;
-    private final String username;
+    final String username;
     private final Set<String> users;
-    private volatile boolean running = true;
+    private final MulticastNetworking networking;
 
     public ChatClient(String username) throws IOException {
         this.username = username;
         users = new HashSet<>();
 
         setupUI(); // Setup GUI
-        setupNetworking(); // Setup networking with UDP and Multicast
+        networking = new MulticastNetworking(this); // Setup networking
 
         Runtime.getRuntime().addShutdownHook(new Thread(this::leaveChat));
     }
@@ -53,6 +48,7 @@ public class ChatClient extends JFrame {
             JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, chatScrollPane, userScrollPane);
             splitPane.setResizeWeight(0.8);
             splitPane.setDividerLocation(400);
+            splitPane.setDividerSize(1); // Set divider size to 1 to make it almost invisible
 
             JButton sendButton = new JButton("Send");
             sendButton.addActionListener(_ -> sendMessage());
@@ -75,80 +71,19 @@ public class ChatClient extends JFrame {
             inputField.addActionListener(_ -> sendMessage());
             disconnectButton.addActionListener(_ -> {
                 leaveChat();
-                System.exit(0);
+                dispose(); // Close the current chat window
+                showUsernameInput(); // Show the username input dialog again
             });
 
             setVisible(true);
         });
     }
 
-    private void setupNetworking() throws IOException {
-        socket = new MulticastSocket(PORT);
-        group = InetAddress.getByName(MULTICAST_ADDRESS);
-        NetworkInterface networkInterface = NetworkInterface.getByInetAddress(InetAddress.getLocalHost());
-        socket.joinGroup(new InetSocketAddress(group, PORT), networkInterface);
-
-        new Thread(new MessageReceiver()).start();
-        joinChat();
-        requestUserList();
+    public void displayMessage(String message) {
+        SwingUtilities.invokeLater(() -> chatArea.append(message + "\n"));
     }
 
-    private void sendMessage() {
-        String message = inputField.getText().trim();
-        if (!message.isEmpty()) {
-            sendPacket("MESSAGE:" + username + ": " + message);
-            inputField.setText("");
-        }
-    }
-
-    private void joinChat() {
-        System.out.println("Joining chat as " + username); // Add logging here
-        sendPacket("JOIN:" + username);
-        users.add(username);
-        updateUsersList();
-    }
-
-    private void leaveChat() {
-        running = false;
-        sendPacket("LEAVE:" + username);
-        users.remove(username);
-        if (socket != null && !socket.isClosed()) {
-            try {
-                NetworkInterface networkInterface = NetworkInterface.getByInetAddress(InetAddress.getLocalHost());
-                socket.leaveGroup(new InetSocketAddress(group, PORT), networkInterface);
-            } catch (IOException e) {
-                LOGGER.log(Level.SEVERE, "Error leaving group: " + e.getMessage(), e);
-            }
-            socket.close();
-        }
-    }
-
-    private void requestUserList() {
-        sendPacket("REQUEST_USER_LIST:" + username);
-    }
-
-    private void sendUserList(String requester) {
-        for (String user : users) {
-            sendPacket("USER_LIST:" + requester + ":" + user);
-        }
-    }
-
-    private void sendPacket(String message) {
-        if (socket == null || socket.isClosed()) {
-            System.out.println("Socket is closed, unable to send packet.");
-            return; // Don't attempt to send if the socket is closed
-        }
-        try {
-            byte[] buffer = message.getBytes();
-            DatagramPacket packet = new DatagramPacket(buffer, buffer.length, group, PORT);
-            socket.send(packet);
-            System.out.println("Sent packet: " + message); // Add logging here
-        } catch (IOException e) {
-            LOGGER.log(Level.SEVERE, "Error sending packet: " + e.getMessage(), e);
-        }
-    }
-
-    private synchronized void updateUsersList() {
+    public void updateUserList(Set<String> users) {
         SwingUtilities.invokeLater(() -> {
             userModel.clear();
             for (String user : users) {
@@ -157,89 +92,36 @@ public class ChatClient extends JFrame {
         });
     }
 
-    private class MessageReceiver implements Runnable {
-        @Override
-        public void run() {
-            byte[] buffer = new byte[1024];
-            while (running) {
-                try {
-                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                    socket.receive(packet);
-                    String message = new String(packet.getData(), 0, packet.getLength());
-                    System.out.println("Received packet: " + message); // Add logging here
-
-                    String[] parts = message.split(":", 3);
-
-                    // Adjust parsing and validation
-                    if (parts.length < 2) {
-                        System.out.println("Received malformed message: " + message);
-                        continue;
-                    }
-
-                    switch (parts[0]) {
-                        case "MESSAGE" -> {
-                            if (parts.length == 3) {
-                                String user = parts[1];
-                                String msg = parts[2];
-                                SwingUtilities.invokeLater(() -> chatArea.append(user + ": " + msg + "\n"));
-                            } else {
-                                System.out.println("Received malformed message: " + message);
-                            }
-                        }
-                        case "JOIN" -> {
-                            String newUser = parts[1];
-                            users.add(newUser);
-                            updateUsersList();
-                            SwingUtilities.invokeLater(() -> chatArea.append(newUser + " has joined the chat.\n"));
-                        }
-                        case "LEAVE" -> {
-                            String leavingUser = parts[1];
-                            users.remove(leavingUser);
-                            updateUsersList();
-                            SwingUtilities.invokeLater(() -> chatArea.append(leavingUser + " has left the chat.\n"));
-                        }
-                        case "REQUEST_USER_LIST" -> {
-                            String requester = parts[1];
-                            sendUserList(requester);
-                        }
-                        case "USER_LIST" -> {
-                            if (parts.length == 3) {
-                                String user = parts[2];
-                                if (!users.contains(user)) {
-                                    users.add(user);
-                                    updateUsersList();
-                                }
-                            } else {
-                                System.out.println("Received malformed message: " + message);
-                            }
-                        }
-                        default -> System.out.println("Unknown message type: " + parts[0]);
-                    }
-                } catch (IOException e) {
-                    if (!running) {
-                        System.out.println("Socket closed, stopping receiver thread.");
-                    } else {
-                        LOGGER.log(Level.SEVERE, "Error receiving packet: " + e.getMessage(), e);
-                    }
-                    break;
-                }
-            }
+    private void sendMessage() {
+        String message = inputField.getText().trim();
+        if (!message.isEmpty()) {
+            networking.sendPacket("MESSAGE:" + username + ": " + message);
+            inputField.setText("");
         }
     }
 
+    private void leaveChat() {
+        networking.leaveChat(username);
+    }
 
-    public static void main(String[] args) {
+    public Set<String> getUsers() {
+        return users;
+    }
+
+    public static void showUsernameInput() {
         SwingUtilities.invokeLater(() -> {
             String username = JOptionPane.showInputDialog(null, "Enter your username:", "Chat Client", JOptionPane.PLAIN_MESSAGE);
             if (username != null && !username.trim().isEmpty()) {
                 try {
-                    new ChatClient(username);
+                    new ChatClient(username); // Start a new ChatClient instance
                 } catch (IOException e) {
-                    LOGGER.log(Level.SEVERE, "Error starting chat client: " + e.getMessage(), e);
+                    Logger.getLogger(ChatClient.class.getName()).log(Level.SEVERE, "Error starting chat client: " + e.getMessage(), e);
                 }
-            } else {
-                System.exit(0);
             }
         });
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(ChatClient::showUsernameInput);
     }
 }
