@@ -14,7 +14,7 @@ public class ChatClient extends JFrame {
     private JList<String> userList;
     private DefaultListModel<String> userModel;
 
-    private final String username;
+    final String username;
     private final Set<String> users;
     private final MulticastNetworking networking;
 
